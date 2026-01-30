@@ -12,7 +12,7 @@ const GLOBAL_CONFIG = {
   targetPlayer: 'ditnshyky'
 };
 
-const ACCOUNTS = ['dawg', 'ws_lv];
+const ACCOUNTS = ['dawg', 'ws_lv'];
 const bots = {}; 
 
  class BotInstance {
