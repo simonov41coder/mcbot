@@ -3,7 +3,6 @@ const express = require('express');
 const app = express();
 const port = process.env.PORT || 8080;
 
-// --- CONFIGURATION ---
 const GLOBAL_CONFIG = {
   host: '185.207.166.12',
   port: 25565,
@@ -12,19 +11,24 @@ const GLOBAL_CONFIG = {
   targetPlayer: 'ditnshyky'
 };
 
-const ACCOUNTS = ['dawg', 'ws_lv'];
-const bots = {}; 
+const ACCOUNTS = ['ws_lv', 'dawg'];
+const bots = {};
+let webLogs = [];
 
- class BotInstance {
+function addWebLog(name, msg) {
+  const entry = `[${new Date().toLocaleTimeString()}] [${name}] ${msg}`;
+  console.log(entry);
+  webLogs.unshift(entry);
+  if (webLogs.length > 50) webLogs.pop();
+}
+
+class BotInstance {
   constructor(username, index) {
     this.username = username;
     this.status = 'Initializing';
     this.isQueued = false;
-    this.queuePos = 0;
-    this.isJoining = false;
     
-    // Stagger starts
-    setTimeout(() => this.connect(), index * 15000);
+    setTimeout(() => this.connect(), index * 10000);
   }
 
   connect() {
@@ -34,161 +38,123 @@ const bots = {};
       port: GLOBAL_CONFIG.port,
       username: this.username,
       version: GLOBAL_CONFIG.version,
-      auth: 'offline',
-      checkTimeoutInterval: 90000
+      auth: 'offline'
     });
 
     this.bot.once('spawn', async () => {
-      this.status = 'Online (Lobby)';
-      console.log(`[${this.username}] Spawned in lobby.`);
+      this.status = 'In Lobby';
+      addWebLog(this.username, "Spawned. Authenticating...");
       
-      // Auth Sequence
       await new Promise(r => setTimeout(r, 2000));
       this.bot.chat(`/register ${GLOBAL_CONFIG.password}`);
-      await new Promise(r => setTimeout(r, 1500));
+      await new Promise(r => setTimeout(r, 1000));
       this.bot.chat(`/login ${GLOBAL_CONFIG.password}`);
       
-      // Start trying to join the realm after 5 seconds
-      setTimeout(() => this.attemptJoin(), 5000);
+      // Anti-AFK jump
+      this.bot.setControlState('jump', true);
+      setTimeout(() => this.bot.setControlState('jump', false), 500);
+
+      // Start the join loop
+      this.startJoinLoop();
     });
 
     this.bot.on('messagestr', (msg) => {
       if (msg.includes('❤') || msg.includes('★')) return;
+      addWebLog(this.username, `MSG: ${msg.trim()}`);
       
-      // Queue Detection
-      const queueMatch = msg.match(/position (\d+) of/);
-      if (queueMatch) {
+      if (msg.toLowerCase().includes('position')) {
+        this.status = 'In Queue';
         this.isQueued = true;
-        this.queuePos = parseInt(queueMatch[1]);
-        this.status = `Queued (${this.queuePos})`;
-        
-        if (this.queuePos > 5) {
-            console.log(`[${this.username}] Queue high (${this.queuePos}). Sleeping.`);
-            this.bot.quit();
-            this.status = `Waiting (Pos ${this.queuePos})`;
-            setTimeout(() => this.connect(), this.queuePos * 10000);
-        }
       }
-
-      if (msg.includes('Welcome') || msg.includes('joined the game')) {
+      if (msg.toLowerCase().includes('welcome')) {
         this.status = 'In-Game';
         this.isQueued = false;
-        this.isJoining = false;
       }
     });
 
     this.bot.on('end', (reason) => {
       this.status = 'Offline';
-      this.isJoining = false;
-      console.log(`[${this.username}] Disconnected: ${reason}`);
-      setTimeout(() => this.connect(), 60000);
+      this.isQueued = false;
+      addWebLog(this.username, `Disconnected: ${reason}`);
+      setTimeout(() => this.connect(), 30000);
     });
+
+    this.bot.on('error', (err) => addWebLog(this.username, `Error: ${err.code}`));
   }
 
-  async attemptJoin() {
-    if (this.status === 'In-Game' || this.isQueued || this.isJoining) return;
-    
-    this.isJoining = true;
-    console.log(`[${this.username}] Attempting to join Realm...`);
+  async startJoinLoop() {
+    if (this.status === 'In-Game' || this.isQueued) return;
 
-    try {
-      this.bot.setQuickBarSlot(0); // Select the clock
-      await new Promise(r => setTimeout(r, 1000));
-      this.bot.activateItem(); // Right click clock
+    const tryClick = async () => {
+      if (this.status === 'In-Game' || this.isQueued || !this.bot) return;
+      
+      addWebLog(this.username, "Trying to join Realm...");
+      this.bot.setQuickBarSlot(0); 
+      await new Promise(r => setTimeout(r, 500));
+      this.bot.activateItem(); 
+    };
 
-      // Listen for the menu to pop up
-      const onWindow = async (window) => {
-        console.log(`[${this.username}] Menu opened. Clicking Slot 19.`);
-        await new Promise(r => setTimeout(r, 1000));
-        await this.bot.clickWindow(19, 0, 0);
-        this.isJoining = false;
-      };
+    // Listen for window
+    this.bot.on('windowOpen', async (window) => {
+      addWebLog(this.username, "Menu opened! Clicking slot 19...");
+      await this.bot.clickWindow(19, 0, 0);
+    });
 
-      this.bot.once('windowOpen', onWindow);
-
-      // If menu doesn't open in 10s, try again
-      setTimeout(() => {
-        if (this.isJoining) {
-            this.bot.removeListener('windowOpen', onWindow);
-            this.isJoining = false;
-            this.attemptJoin(); 
-        }
-      }, 10000);
-
-    } catch (e) {
-      this.isJoining = false;
-    }
+    // Try every 15 seconds until we are in-game or queued
+    this.joinInterval = setInterval(() => {
+      if (this.status === 'In-Game' || this.isQueued) {
+        clearInterval(this.joinInterval);
+      } else {
+        tryClick();
+      }
+    }, 15000);
   }
 
   tpa() {
-    if (this.bot && this.bot.entity) {
-      this.bot.chat(`/tpa ${GLOBAL_CONFIG.targetPlayer}`);
-      return true;
-    }
-    return false;
+    if (this.bot) this.bot.chat(`/tpa ${GLOBAL_CONFIG.targetPlayer}`);
   }
 }
-   
 
-// Start Bots
-ACCOUNTS.forEach((name, i) => {
-  bots[name] = new BotInstance(name, i);
-});
+ACCOUNTS.forEach((name, i) => { bots[name] = new BotInstance(name, i); });
 
-// --- WEB INTERFACE ---
+// --- DASHBOARD ---
 app.get('/', (req, res) => {
-  let rows = '';
-  Object.keys(bots).forEach(name => {
-    rows += `
-      <tr>
-        <td>${name}</td>
-        <td><strong>${bots[name].status}</strong></td>
-        <td><button onclick="fetch('/tpa/${name}')">Send TPA</button></td>
-      </tr>`;
-  });
+  let botRows = Object.keys(bots).map(name => `
+    <tr>
+      <td>${name}</td>
+      <td><strong>${bots[name].status}</strong></td>
+      <td><button onclick="fetch('/tpa/${name}')">TPA</button></td>
+    </tr>`).join('');
 
   res.send(`
     <html>
       <head>
-        <title>Bot Panel</title>
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>
-          body { font-family: sans-serif; padding: 20px; background: #121212; color: white; }
-          table { width: 100%; border-collapse: collapse; }
-          th, td { padding: 10px; border: 1px solid #333; text-align: left; }
-          button { padding: 8px 15px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
-          button:active { background: #0056b3; }
+          body { font-family: sans-serif; background: #1a1a1a; color: #eee; padding: 20px; }
+          table { width: 100%; border: 1px solid #444; margin-bottom: 20px; }
+          td, th { padding: 10px; border: 1px solid #444; }
+          .logs { background: #000; padding: 10px; height: 200px; overflow-y: scroll; font-family: monospace; font-size: 12px; border: 2px solid #333; }
+          button { background: #007bff; color: white; border: none; padding: 10px; border-radius: 5px; cursor: pointer; }
         </style>
       </head>
       <body>
-        <h2>Minecraft Bot Commander</h2>
+        <h2>Bot Dashboard</h2>
         <table>
-          <tr><th>Bot Name</th><th>Status</th><th>Action</th></tr>
-          ${rows}
+          <tr><th>Bot</th><th>Status</th><th>Action</th></tr>
+          ${botRows}
         </table>
-        <br>
-        <button onclick="fetch('/tpa-all')" style="background: #28a745;">TPA ALL BOTS</button>
+        <button onclick="fetch('/tpa-all')" style="background:#28a745">TPA ALL</button>
+        <h3>Live Logs</h3>
+        <div class="logs">${webLogs.join('<br>')}</div>
+        <script>setTimeout(() => location.reload(), 5000);</script>
       </body>
     </html>
   `);
 });
 
-app.get('/tpa/:name', (req, res) => {
-  const name = req.params.name;
-  if (bots[name]) {
-    bots[name].tpa();
-    res.send('Sent');
-  } else {
-    res.status(404).send('Not Found');
-  }
-});
+app.get('/tpa/:name', (req, res) => { bots[req.params.name]?.tpa(); res.send('ok'); });
+app.get('/tpa-all', (req, res) => { Object.values(bots).forEach(b => b.tpa()); res.send('ok'); });
 
-app.get('/tpa-all', (req, res) => {
-  Object.values(bots).forEach(b => b.tpa());
-  res.send('All Sent');
-});
-
-app.listen(port, () => {
-  console.log(`Dashboard running on port ${port}`);
-});
+app.listen(port, () => console.log(`Dashboard on port ${port}`));
 
