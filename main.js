@@ -11,7 +11,7 @@ const GLOBAL_CONFIG = {
   targetPlayer: 'ditnshyky'
 };
 
-const ACCOUNTS = ['ws_lv', 'dawg'];
+const ACCOUNTS = ['ws_lv', 'dawg', 'yakk1k'];
 const bots = {};
 let webLogs = [];
 
