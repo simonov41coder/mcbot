@@ -163,7 +163,7 @@ class BotInstance {
       const yaw = Math.random() * Math.PI - (0.5 * Math.PI);
       const pitch = Math.random() * Math.PI - (0.5 * Math.PI);
       this.bot.look(yaw, pitch);
-    }, 3000);
+    }, 30000);
   }
 
   tpa() {
