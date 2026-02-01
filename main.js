@@ -98,7 +98,7 @@ class BotInstance {
         const window = await this.bot.waitForTicks(20).then(() => this.bot.currentWindow);
         if (window) {
              addWebLog(this.username, `Menu open: ${window.title}. Clicking slot 21...`);
-             await this.bot.clickWindow(19, 0, 0);
+             await this.bot.clickWindow(13, 0, 0);
              await this.wait(1000);
         }
       } catch (e) {}
