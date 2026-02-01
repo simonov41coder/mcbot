@@ -90,8 +90,8 @@ class BotInstance {
       try {
         // If a window is already open, just click
         if (this.bot.currentWindow) {
-          addWebLog(this.username, "Selector open. Clicking slot 21...");
-          await this.bot.clickWindow(21, 0, 0);
+          addWebLog(this.username, "Selector open. Clicking slot 20...");
+          await this.bot.clickWindow(20, 0, 0);
           return;
         }
 
