@@ -12,7 +12,7 @@ const GLOBAL_CONFIG = {
   targetPlayer: 'ditnshyky'
 };
 
-const ACCOUNTS = ['ws_lv', 'Kalashnikov', 'sr41']; 
+const ACCOUNTS = ['ws_lv', 'sr41', 'penguras_money']; 
 const bots = {};
 let webLogs = [];
 
@@ -82,11 +82,11 @@ class BotInstance {
     });
   }
 
-  // Manual skin command trigger
-  applySkin(skinName) {
+  // --- RAW INPUT FUNCTION ---
+  sendRawChat(msg) {
     if (this.bot) {
-      this.bot.chat(`/skin ${skinName}`);
-      addWebLog(this.username, `Executed: /skin ${skinName}`);
+      this.bot.chat(msg);
+      addWebLog(this.username, `Sent: ${msg}`);
     }
   }
 
@@ -133,7 +133,7 @@ app.get('/', (req, res) => {
       <td style="color:${bots[name].status === 'In-Game' ? '#28a745' : '#ffc107'}"><b>${bots[name].status}</b></td>
       <td>
         <button onclick="fetch('/tpa/${name}')">TPA</button>
-        <button onclick="let s=prompt('Enter Skin Name:'); if(s) fetch('/skin/${name}/'+s)" style="background:#6f42c1">Skin</button>
+        <button onclick="sendChat('${name}')" style="background:#6c757d">Chat</button>
       </td>
     </tr>`).join('');
 
@@ -145,14 +145,25 @@ app.get('/', (req, res) => {
         table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
         td, th { padding: 10px; border: 1px solid #333; text-align: left; }
         button { padding: 8px 12px; border-radius: 4px; border: none; background: #007bff; color: white; cursor: pointer; margin-right:5px; }
-        .logs { background: #000; height: 250px; overflow-y: scroll; padding: 10px; font-family: monospace; font-size: 11px; border: 1px solid #444; }
+        .logs { background: #000; height: 300px; overflow-y: scroll; padding: 10px; font-family: monospace; font-size: 11px; border: 1px solid #444; }
       </style></head>
       <body>
         <h3>Bot Commander</h3>
         <table><tr><th>Bot</th><th>Status</th><th>Actions</th></tr>${rows}</table>
-        <button onclick="fetch('/tpa-all')" style="background:#28a745; width:100%; padding: 15px;">TPA ALL BOTS</button>
+        <button onclick="fetch('/tpa-all')" style="background:#28a745; width:100%; padding: 15px; margin-bottom:10px;">TPA ALL BOTS</button>
+        <button onclick="sendChatAll()" style="background:#dc3545; width:100%; padding: 15px;">CHAT ALL BOTS</button>
         <br><br><strong>Logs:</strong><div class="logs">${webLogs.join('<br>')}</div>
-        <script>setInterval(() => window.location.reload(), 8000);</script>
+        <script>
+            function sendChat(name) {
+                let msg = prompt('Enter message or command for ' + name + ':');
+                if(msg) fetch('/chat/' + name + '?msg=' + encodeURIComponent(msg));
+            }
+            function sendChatAll() {
+                let msg = prompt('Enter message for ALL bots:');
+                if(msg) fetch('/chat-all?msg=' + encodeURIComponent(msg));
+            }
+            setInterval(() => window.location.reload(), 8000);
+        </script>
       </body>
     </html>
   `);
@@ -160,7 +171,16 @@ app.get('/', (req, res) => {
 
 app.get('/tpa/:name', (req, res) => { bots[req.params.name]?.tpa(); res.sendStatus(200); });
 app.get('/tpa-all', (req, res) => { Object.values(bots).forEach(b => b.tpa()); res.sendStatus(200); });
-app.get('/skin/:name/:skin', (req, res) => { bots[req.params.name]?.applySkin(req.params.skin); res.sendStatus(200); });
+
+// Raw Chat Routes
+app.get('/chat/:name', (req, res) => {
+    bots[req.params.name]?.sendRawChat(req.query.msg);
+    res.sendStatus(200);
+});
+app.get('/chat-all', (req, res) => {
+    Object.values(bots).forEach(b => b.sendRawChat(req.query.msg));
+    res.sendStatus(200);
+});
 
 app.listen(port, () => console.log(`Worker live on ${port}`));
 
