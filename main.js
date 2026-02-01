@@ -3,7 +3,6 @@ const express = require('express');
 const app = express();
 const port = process.env.PORT || 8080;
 
-// --- CONFIGURATION ---
 const GLOBAL_CONFIG = {
   host: '185.207.166.12',
   port: 25565,
@@ -17,10 +16,11 @@ const bots = {};
 let webLogs = [];
 
 function addWebLog(name, msg) {
-  const entry = `[${new Date().toLocaleTimeString()}] [${name}] ${msg}`;
+  const cleanMsg = msg.replace(/§[0-9a-fk-or]/g, ''); // Remove color codes for clean logs
+  const entry = `[${new Date().toLocaleTimeString()}] [${name}] ${cleanMsg}`;
   console.log(entry);
   webLogs.unshift(entry);
-  if (webLogs.length > 50) webLogs.pop();
+  if (webLogs.length > 100) webLogs.pop(); // Keep last 100 messages
 }
 
 class BotInstance {
@@ -45,6 +45,11 @@ class BotInstance {
       auth: 'offline'
     });
 
+    // LOG ALL CHAT (Server & Players)
+    this.bot.on('message', (jsonMsg) => {
+        addWebLog(this.username, jsonMsg.toString());
+    });
+
     this.bot.once('spawn', async () => {
       this.status = 'Lobby (Auth)';
       this.startAfkMovements();
@@ -59,19 +64,14 @@ class BotInstance {
     });
 
     this.bot.on('messagestr', (msg) => {
-      if (msg.includes('❤') || msg.includes('★')) return;
-      
       const queueMatch = msg.match(/position (\d+) of/);
       if (queueMatch) {
         this.isQueued = true;
         this.status = `Queued (${queueMatch[1]})`;
-        if (this.joinInterval) clearInterval(this.joinInterval);
       }
-      
-      if (msg.toLowerCase().includes('welcome') || msg.toLowerCase().includes('teleport')) {
+      if (msg.toLowerCase().includes('welcome') || msg.toLowerCase().includes('joined the game')) {
         this.status = 'In-Game';
         this.isQueued = false;
-        if (this.joinInterval) clearInterval(this.joinInterval);
       }
     });
 
@@ -80,22 +80,16 @@ class BotInstance {
       addWebLog(this.username, `Disconnected: ${reason}`);
       setTimeout(() => this.connect(), 20000);
     });
+
+    this.bot.on('error', (err) => addWebLog(this.username, `ERROR: ${err.message}`));
   }
 
-  // --- RAW INPUT FUNCTION ---
-  sendRawChat(msg) {
-    if (this.bot) {
-      this.bot.chat(msg);
-      addWebLog(this.username, `Sent: ${msg}`);
-    }
-  }
-
-  forceJoinRealm() {
+  async forceJoinRealm() {
     if (this.joinInterval) clearInterval(this.joinInterval);
     this.joinInterval = setInterval(async () => {
       if (this.status === 'In-Game' || this.isQueued || !this.bot) return;
 
-      const clock = this.bot.inventory.items().find(item => item.name.includes('clock'));
+      const clock = this.bot.inventory.items().find(item => item.name.includes('clock') || item.name.includes('compass'));
       if (!clock) return;
 
       try {
@@ -103,19 +97,27 @@ class BotInstance {
         this.bot.activateItem(); 
         const window = await this.bot.waitForTicks(20).then(() => this.bot.currentWindow);
         if (window) {
+             addWebLog(this.username, `Menu open: ${window.title}. Clicking slot 19...`);
              await this.bot.clickWindow(19, 0, 0);
              await this.wait(1000);
-             this.bot.closeWindow(window);
         }
       } catch (e) {}
-    }, 8000);
+    }, 10000);
+  }
+
+  manualClick(slot) {
+    if (this.bot && this.bot.currentWindow) {
+        this.bot.clickWindow(slot, 0, 0);
+        addWebLog(this.username, `Manual Clicked Slot ${slot}`);
+    } else if (this.bot) {
+        this.bot.activateItem(); // Try opening the menu first
+        addWebLog(this.username, "No window open. Right-clicking held item...");
+    }
   }
 
   startAfkMovements() {
     this.afkInterval = setInterval(() => {
-      if (this.bot?.entity) {
-        this.bot.look(Math.random() * 3, Math.random() * 3);
-      }
+      if (this.bot?.entity) this.bot.look(Math.random() * 3, Math.random() * 3);
     }, 5000);
   }
 
@@ -125,7 +127,7 @@ class BotInstance {
 
 ACCOUNTS.forEach((name, i) => { bots[name] = new BotInstance(name, i); });
 
-// --- WEB DASHBOARD ---
+// --- DASHBOARD ---
 app.get('/', (req, res) => {
   let rows = Object.keys(bots).map(name => `
     <tr>
@@ -133,7 +135,9 @@ app.get('/', (req, res) => {
       <td style="color:${bots[name].status === 'In-Game' ? '#28a745' : '#ffc107'}"><b>${bots[name].status}</b></td>
       <td>
         <button onclick="fetch('/tpa/${name}')">TPA</button>
-        <button onclick="sendChat('${name}')" style="background:#6c757d">Chat</button>
+        <button onclick="sendChat('${name}')">Chat</button>
+        <button onclick="manualClick('${name}')" style="background:#fd7e14">Click</button>
+        <button onclick="fetch('/reconnect/${name}')" style="background:#dc3545">RST</button>
       </td>
     </tr>`).join('');
 
@@ -141,46 +145,50 @@ app.get('/', (req, res) => {
     <html>
       <head><meta name="viewport" content="width=device-width, initial-scale=1">
       <style>
-        body { font-family: sans-serif; background: #121212; color: #fff; padding: 15px; }
-        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-        td, th { padding: 10px; border: 1px solid #333; text-align: left; }
-        button { padding: 8px 12px; border-radius: 4px; border: none; background: #007bff; color: white; cursor: pointer; margin-right:5px; }
-        .logs { background: #000; height: 300px; overflow-y: scroll; padding: 10px; font-family: monospace; font-size: 11px; border: 1px solid #444; }
+        body { font-family: sans-serif; background: #121212; color: #fff; padding: 10px; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 10px; font-size: 14px; }
+        td, th { padding: 8px; border: 1px solid #333; text-align: left; }
+        button { padding: 6px 10px; border-radius: 4px; border: none; background: #007bff; color: white; cursor: pointer; margin-bottom: 2px; }
+        .logs { background: #000; height: 350px; overflow-y: scroll; padding: 10px; font-family: monospace; font-size: 11px; border: 1px solid #444; color: #0f0; }
       </style></head>
       <body>
-        <h3>Bot Commander</h3>
+        <h3>Bot Dashboard</h3>
         <table><tr><th>Bot</th><th>Status</th><th>Actions</th></tr>${rows}</table>
-        <button onclick="fetch('/tpa-all')" style="background:#28a745; width:100%; padding: 15px; margin-bottom:10px;">TPA ALL BOTS</button>
-        <button onclick="sendChatAll()" style="background:#dc3545; width:100%; padding: 15px;">CHAT ALL BOTS</button>
-        <br><br><strong>Logs:</strong><div class="logs">${webLogs.join('<br>')}</div>
+        <button onclick="fetch('/tpa-all')" style="background:#28a745; width:48%;">TPA ALL</button>
+        <button onclick="sendChatAll()" style="background:#6c757d; width:48%;">CHAT ALL</button>
+        <div style="margin-top:10px;"><strong>Server Logs:</strong></div>
+        <div class="logs" id="logBox">${webLogs.join('<br>')}</div>
         <script>
             function sendChat(name) {
-                let msg = prompt('Enter message or command for ' + name + ':');
+                let msg = prompt('Message/Command for ' + name);
                 if(msg) fetch('/chat/' + name + '?msg=' + encodeURIComponent(msg));
             }
+            function manualClick(name) {
+                let slot = prompt('Enter Slot Number to click (usually 19-21):', '19');
+                if(slot) fetch('/click/' + name + '/' + slot);
+            }
             function sendChatAll() {
-                let msg = prompt('Enter message for ALL bots:');
+                let msg = prompt('Message for ALL bots');
                 if(msg) fetch('/chat-all?msg=' + encodeURIComponent(msg));
             }
-            setInterval(() => window.location.reload(), 8000);
+            setInterval(() => {
+                fetch('/get-logs').then(r => r.text()).then(html => {
+                    document.getElementById('logBox').innerHTML = html;
+                });
+            }, 3000);
         </script>
       </body>
     </html>
   `);
 });
 
+app.get('/get-logs', (req, res) => res.send(webLogs.join('<br>')));
+app.get('/reconnect/:name', (req, res) => { bots[req.params.name]?.bot.quit(); res.sendStatus(200); });
+app.get('/click/:name/:slot', (req, res) => { bots[req.params.name]?.manualClick(parseInt(req.params.slot)); res.sendStatus(200); });
 app.get('/tpa/:name', (req, res) => { bots[req.params.name]?.tpa(); res.sendStatus(200); });
 app.get('/tpa-all', (req, res) => { Object.values(bots).forEach(b => b.tpa()); res.sendStatus(200); });
+app.get('/chat/:name', (req, res) => { bots[req.params.name]?.sendRawChat(req.query.msg); res.sendStatus(200); });
+app.get('/chat-all', (req, res) => { Object.values(bots).forEach(b => b.sendRawChat(req.query.msg)); res.sendStatus(200); });
 
-// Raw Chat Routes
-app.get('/chat/:name', (req, res) => {
-    bots[req.params.name]?.sendRawChat(req.query.msg);
-    res.sendStatus(200);
-});
-app.get('/chat-all', (req, res) => {
-    Object.values(bots).forEach(b => b.sendRawChat(req.query.msg));
-    res.sendStatus(200);
-});
-
-app.listen(port, () => console.log(`Worker live on ${port}`));
+app.listen(port, () => console.log(`Dashboard live on ${port}`));
 
