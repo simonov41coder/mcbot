@@ -11,7 +11,7 @@ const GLOBAL_CONFIG = {
   targetPlayer: 'ditnshyky'
 };
 
-const ACCOUNTS = ['ws_lv', 'ws_lv2', 'ws_lv3', 'ws_lv4', 'ws_lv5']; 
+const ACCOUNTS = ['ws_lv', 'penguras_money', 'sr41']; 
 const bots = {};
 let webLogs = [];
 
@@ -90,8 +90,8 @@ class BotInstance {
       try {
         // If a window is already open, just click
         if (this.bot.currentWindow) {
-          addWebLog(this.username, "Selector open. Clicking slot 19...");
-          await this.bot.clickWindow(19, 0, 0);
+          addWebLog(this.username, "Selector open. Clicking slot 21...");
+          await this.bot.clickWindow(21, 0, 0);
           return;
         }
 
