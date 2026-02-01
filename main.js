@@ -106,7 +106,7 @@ class BotInstance {
       if (this.bot.currentWindow) {
         addWebLog(this.username, `Menu "${this.bot.currentWindow.title}" is open. Clicking slot 19...`);
         // Mode 0, Button 0 = Simple Left Click (doesn't "grab" the item)
-        await this.bot.clickWindow(19, 0, 0); 
+        await this.bot.clickWindow(21, 0, 0); 
         return;
       }
 
