@@ -3,6 +3,7 @@ const express = require('express');
 const app = express();
 const port = process.env.PORT || 8080;
 
+// --- 1. CONFIGURATION ---
 const GLOBAL_CONFIG = {
   host: '185.207.166.12',
   port: 25565,
@@ -11,14 +12,13 @@ const GLOBAL_CONFIG = {
   targetPlayer: 'ditnshyky'
 };
 
-const ACCOUNTS = ['ws_lv', 'penguras_money','sr41']; 
+const ACCOUNTS = ['ws_lv', 'penguras_money', 'sr41']; 
 const bots = {};
 let webLogs = [];
 
 function addWebLog(name, msg) {
-  // Strip Minecraft color codes for the web UI
-  const cleanMsg = msg.replace(/§[0-9a-fk-or]/g, '');
-  const entry = `<span style="color: #55ff55">[${new Date().toLocaleTimeString()}]</span> <b>[${name}]</b> ${cleanMsg}`;
+  const cleanMsg = msg.replace(/§[0-9a-fk-or]/g, ''); // Clean Minecraft colors
+  const entry = `<span style="color: #888">[${new Date().toLocaleTimeString()}]</span> <b style="color: #55ff55">[${name}]</b> ${cleanMsg}`;
   webLogs.unshift(entry);
   if (webLogs.length > 100) webLogs.pop();
 }
@@ -27,14 +27,17 @@ class BotInstance {
   constructor(username, index) {
     this.username = username;
     this.status = 'Initializing';
-    this.isQueued = false;
     this.isInGame = false;
+    this.isQueued = false;
     
-    setTimeout(() => this.connect(), index * 8000);
+    // Staggered login to prevent server kick for "Too many connections"
+    setTimeout(() => this.connect(), index * 10000);
   }
 
   connect() {
+    this.cleanup();
     this.status = 'Connecting...';
+    
     this.bot = mineflayer.createBot({
       host: GLOBAL_CONFIG.host,
       port: GLOBAL_CONFIG.port,
@@ -43,23 +46,30 @@ class BotInstance {
       auth: 'offline'
     });
 
-    // --- ENHANCED LOGGING ---
-    // This captures EVERY message the server sends
+    // --- FULL CHAT LOGGING ---
     this.bot.on('message', (jsonMsg) => {
-        addWebLog(this.username, jsonMsg.toString());
+      addWebLog(this.username, jsonMsg.toString());
     });
 
     this.bot.once('spawn', async () => {
       this.status = 'Lobby (Auth)';
-      this.startAfkMovements();
+      addWebLog(this.username, "Spawned. Authenticating...");
 
+      // Simple anti-AFK: Move head
+      this.afkInterval = setInterval(() => {
+        if (this.bot?.entity && !this.isInGame) {
+          this.bot.look(Math.random() * Math.PI, (Math.random() - 0.5) * Math.PI);
+        }
+      }, 4000);
+
+      // Auth Sequence
       await this.wait(2000);
       this.bot.chat(`/register ${GLOBAL_CONFIG.password}`);
       await this.wait(1500);
       this.bot.chat(`/login ${GLOBAL_CONFIG.password}`);
       
       this.status = 'Lobby (Joining)';
-      this.startLoops();
+      this.startJoinCheck();
     });
 
     this.bot.on('end', (reason) => {
@@ -69,53 +79,52 @@ class BotInstance {
       setTimeout(() => this.connect(), 20000);
     });
 
-    this.bot.on('error', (err) => addWebLog(this.username, `ERROR: ${err.message}`));
+    this.bot.on('error', (err) => addWebLog(this.username, `System Error: ${err.message}`));
   }
 
-  startLoops() {
-    if (this.joinInterval) clearInterval(this.joinInterval);
-    
+  async startJoinCheck() {
     this.joinInterval = setInterval(async () => {
-      if (!this.bot) return;
+      if (!this.bot || this.isInGame) return;
 
-      // --- 1. BLOCK DETECTION ---
-      // Scans for grass_block within 16 blocks
+      // --- 1. PHYSICAL CHECK (Grass Block) ---
+      // If we see grass, we are 100% in the game.
       const grass = this.bot.findBlock({
         matching: this.bot.registry.blocksByName.grass_block.id,
-        maxDistance: 16
+        maxDistance: 32
       });
 
       if (grass) {
-        if (!this.isInGame) addWebLog(this.username, "TRUTH: Grass detected! We are In-Game.");
+        if (!this.isInGame) addWebLog(this.username, "✅ Grass detected. Confirming In-Game status.");
         this.isInGame = true;
         this.status = 'In-Game';
-        return; // Stop trying to click the clock if we see grass
+        clearInterval(this.joinInterval);
+        return;
       }
 
-      // --- 2. JOIN LOGIC (If not in game) ---
-      if (this.status.includes('Lobby')) {
-        const clock = this.bot.inventory.items().find(i => i.name.includes('clock') || i.name.includes('compass'));
-        if (clock) {
-          try {
-            await this.bot.equip(clock, 'hand');
-            this.bot.activateItem();
-            const window = await this.bot.waitForTicks(20).then(() => this.bot.currentWindow);
-            if (window) {
-                 await this.bot.clickWindow(19, 0, 0); // Click slot 19
-                 addWebLog(this.username, "Menu found, clicked Slot 19");
-            }
-          } catch (e) {}
-        }
+      // --- 2. JOIN LOGIC (Lobby Interaction) ---
+      // We check if a menu is already open first.
+      if (this.bot.currentWindow) {
+        addWebLog(this.username, `Menu "${this.bot.currentWindow.title}" is open. Clicking slot 19...`);
+        // Mode 0, Button 0 = Simple Left Click (doesn't "grab" the item)
+        await this.bot.clickWindow(19, 0, 0); 
+        return;
       }
-    }, 8000);
+
+      // If no menu, try to use the clock.
+      const clock = this.bot.inventory.items().find(i => i.name.includes('clock') || i.name.includes('compass'));
+      if (clock) {
+        try {
+          await this.bot.equip(clock, 'hand');
+          this.bot.activateItem(); // Right-click to open menu
+          addWebLog(this.username, "Right-clicked clock to open menu...");
+        } catch (e) {}
+      }
+    }, 7000);
   }
 
-  startAfkMovements() {
-    this.afkInterval = setInterval(() => {
-      if (this.bot?.entity && !this.isInGame) {
-        this.bot.look(Math.random() * 3, Math.random() * 1.5);
-      }
-    }, 5000);
+  cleanup() {
+    if (this.joinInterval) clearInterval(this.joinInterval);
+    if (this.afkInterval) clearInterval(this.afkInterval);
   }
 
   sendChat(msg) { if (this.bot) this.bot.chat(msg); }
@@ -123,18 +132,19 @@ class BotInstance {
   wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 }
 
+// --- INITIALIZE ---
 ACCOUNTS.forEach((name, i) => { bots[name] = new BotInstance(name, i); });
 
-// --- DASHBOARD ---
+// --- DASHBOARD (EXPRESS) ---
 app.get('/', (req, res) => {
-  let rows = Object.keys(bots).map(name => `
+  let botRows = Object.keys(bots).map(name => `
     <tr>
       <td>${name}</td>
       <td style="color:${bots[name].status === 'In-Game' ? '#28a745' : '#ffc107'}"><b>${bots[name].status}</b></td>
       <td>
         <button onclick="fetch('/tpa/${name}')">TPA</button>
-        <button onclick="sendChat('${name}')">Chat</button>
-        <button onclick="fetch('/reconnect/${name}')" style="background:#dc3545">RST</button>
+        <button onclick="sendChat('${name}')" style="background:#6c757d">Chat</button>
+        <button onclick="fetch('/reset/${name}')" style="background:#dc3545">RST</button>
       </td>
     </tr>`).join('');
 
@@ -142,40 +152,39 @@ app.get('/', (req, res) => {
     <html>
       <head><meta name="viewport" content="width=device-width, initial-scale=1">
       <style>
-        body { font-family: 'Segoe UI', sans-serif; background: #0f0f0f; color: #e0e0e0; padding: 10px; }
-        table { width: 100%; border-collapse: collapse; background: #1a1a1a; margin-bottom: 15px; border-radius: 8px; overflow: hidden; }
-        th, td { padding: 12px; border-bottom: 1px solid #333; text-align: left; }
-        button { padding: 8px 12px; border-radius: 5px; border: none; background: #3b82f6; color: white; cursor: pointer; font-weight: bold; }
-        .logs { background: #000; height: 400px; overflow-y: scroll; padding: 15px; font-family: 'Consolas', monospace; font-size: 12px; border: 1px solid #444; color: #fff; line-height: 1.5; }
-        .controls { display: flex; gap: 10px; margin-bottom: 10px; }
+        body { font-family: sans-serif; background: #121212; color: #fff; padding: 10px; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 15px; background: #1a1a1a; }
+        th, td { padding: 12px; border: 1px solid #333; text-align: left; }
+        button { padding: 8px 12px; border-radius: 4px; border: none; background: #007bff; color: white; cursor: pointer; margin-right: 2px; }
+        .logs { background: #000; height: 400px; overflow-y: scroll; padding: 10px; font-family: monospace; font-size: 12px; border: 1px solid #444; color: #0f0; }
+        .btn-group { display: flex; gap: 5px; margin-bottom: 10px; }
       </style></head>
       <body>
-        <h3>Bot Squad Controller</h3>
-        <table><tr><th>Bot</th><th>Status</th><th>Actions</th></tr>${rows}</table>
-        <div class="controls">
-          <button onclick="fetch('/tpa-all')" style="background:#10b981; flex: 1;">TPA ALL</button>
-          <button onclick="sendChatAll()" style="background:#6b7280; flex: 1;">CHAT ALL</button>
+        <h3>Bot Command Center</h3>
+        <table><tr><th>Bot</th><th>Status</th><th>Actions</th></tr>${botRows}</table>
+        <div class="btn-group">
+          <button onclick="fetch('/tpa-all')" style="background:#28a745; flex:1">TPA ALL</button>
+          <button onclick="sendChatAll()" style="background:#444; flex:1">CHAT ALL</button>
         </div>
-        <div style="margin-top:15px; margin-bottom: 5px;"><strong>Server Console:</strong></div>
+        <strong>Live Console:</strong>
         <div class="logs" id="logBox">${webLogs.join('<br>')}</div>
         <script>
-            function sendChat(name) {
-                let msg = prompt('Message/Command for ' + name);
-                if(msg) fetch('/chat/' + name + '?msg=' + encodeURIComponent(msg));
-            }
-            function sendChatAll() {
-                let msg = prompt('Message for ALL bots');
-                if(msg) fetch('/chat-all?msg=' + encodeURIComponent(msg));
-            }
-            // Auto-update logs every 3 seconds
-            setInterval(() => {
-                fetch('/get-logs').then(r => r.text()).then(html => {
-                    const lb = document.getElementById('logBox');
-                    const wasAtBottom = lb.scrollHeight - lb.clientHeight <= lb.scrollTop + 1;
-                    lb.innerHTML = html;
-                    if (wasAtBottom) lb.scrollTop = lb.scrollHeight;
-                });
-            }, 3000);
+          function sendChat(name) {
+            let m = prompt('Message/Command for ' + name);
+            if(m) fetch('/chat/' + name + '?msg=' + encodeURIComponent(m));
+          }
+          function sendChatAll() {
+            let m = prompt('Message for ALL bots');
+            if(m) fetch('/chat-all?msg=' + encodeURIComponent(m));
+          }
+          setInterval(() => {
+            fetch('/get-logs').then(r => r.text()).then(html => {
+              const b = document.getElementById('logBox');
+              const down = b.scrollHeight - b.clientHeight <= b.scrollTop + 5;
+              b.innerHTML = html;
+              if(down) b.scrollTop = b.scrollHeight;
+            });
+          }, 3000);
         </script>
       </body>
     </html>
@@ -183,11 +192,11 @@ app.get('/', (req, res) => {
 });
 
 app.get('/get-logs', (req, res) => res.send(webLogs.join('<br>')));
-app.get('/reconnect/:name', (req, res) => { bots[req.params.name]?.bot.quit(); res.sendStatus(200); });
+app.get('/reset/:name', (req, res) => { bots[req.params.name]?.bot.quit(); res.sendStatus(200); });
 app.get('/tpa/:name', (req, res) => { bots[req.params.name]?.tpa(); res.sendStatus(200); });
 app.get('/tpa-all', (req, res) => { Object.values(bots).forEach(b => b.tpa()); res.sendStatus(200); });
 app.get('/chat/:name', (req, res) => { bots[req.params.name]?.sendChat(req.query.msg); res.sendStatus(200); });
 app.get('/chat-all', (req, res) => { Object.values(bots).forEach(b => b.sendChat(req.query.msg)); res.sendStatus(200); });
 
-app.listen(port, () => console.log(`Worker active on ${port}`));
+app.listen(port, () => console.log(`Dashboard listening on port ${port}`));
 
