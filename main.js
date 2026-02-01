@@ -3,7 +3,6 @@ const express = require('express');
 const app = express();
 const port = process.env.PORT || 8080;
 
-// --- 1. CONFIGURATION ---
 const GLOBAL_CONFIG = {
   host: '185.207.166.12',
   port: 25565,
@@ -12,15 +11,15 @@ const GLOBAL_CONFIG = {
   targetPlayer: 'ditnshyky'
 };
 
-const ACCOUNTS = ['ws_lv', 'penguras_money', 'sr41']; 
+const ACCOUNTS = ['ws_lv', 'ws_lv2', 'ws_lv3', 'ws_lv4', 'ws_lv5']; 
 const bots = {};
 let webLogs = [];
 
 function addWebLog(name, msg) {
-  const cleanMsg = msg.replace(/§[0-9a-fk-or]/g, ''); // Clean Minecraft colors
+  const cleanMsg = msg.replace(/§[0-9a-fk-or]/g, '');
   const entry = `<span style="color: #888">[${new Date().toLocaleTimeString()}]</span> <b style="color: #55ff55">[${name}]</b> ${cleanMsg}`;
   webLogs.unshift(entry);
-  if (webLogs.length > 100) webLogs.pop();
+  if (webLogs.length > 80) webLogs.pop();
 }
 
 class BotInstance {
@@ -28,16 +27,13 @@ class BotInstance {
     this.username = username;
     this.status = 'Initializing';
     this.isInGame = false;
-    this.isQueued = false;
     
-    // Staggered login to prevent server kick for "Too many connections"
     setTimeout(() => this.connect(), index * 10000);
   }
 
   connect() {
     this.cleanup();
     this.status = 'Connecting...';
-    
     this.bot = mineflayer.createBot({
       host: GLOBAL_CONFIG.host,
       port: GLOBAL_CONFIG.port,
@@ -46,29 +42,17 @@ class BotInstance {
       auth: 'offline'
     });
 
-    // --- FULL CHAT LOGGING ---
-    this.bot.on('message', (jsonMsg) => {
-      addWebLog(this.username, jsonMsg.toString());
-    });
+    this.bot.on('message', (jsonMsg) => addWebLog(this.username, jsonMsg.toString()));
 
     this.bot.once('spawn', async () => {
       this.status = 'Lobby (Auth)';
-      addWebLog(this.username, "Spawned. Authenticating...");
-
-      // Simple anti-AFK: Move head
-      this.afkInterval = setInterval(() => {
-        if (this.bot?.entity && !this.isInGame) {
-          this.bot.look(Math.random() * Math.PI, (Math.random() - 0.5) * Math.PI);
-        }
-      }, 4000);
-
-      // Auth Sequence
+      
+      // Auth
       await this.wait(2000);
       this.bot.chat(`/register ${GLOBAL_CONFIG.password}`);
       await this.wait(1500);
       this.bot.chat(`/login ${GLOBAL_CONFIG.password}`);
       
-      this.status = 'Lobby (Joining)';
       this.startJoinCheck();
     });
 
@@ -79,52 +63,54 @@ class BotInstance {
       setTimeout(() => this.connect(), 20000);
     });
 
-    this.bot.on('error', (err) => addWebLog(this.username, `System Error: ${err.message}`));
+    this.bot.on('error', (err) => addWebLog(this.username, `Error: ${err.message}`));
   }
 
-  async startJoinCheck() {
+  startJoinCheck() {
     this.joinInterval = setInterval(async () => {
-      if (!this.bot || this.isInGame) return;
+      if (!this.bot || !this.bot.inventory) return;
 
-      // --- 1. PHYSICAL CHECK (Grass Block) ---
-      // If we see grass, we are 100% in the game.
-      const grass = this.bot.findBlock({
-        matching: this.bot.registry.blocksByName.grass_block.id,
-        maxDistance: 32
-      });
+      // --- 1. LOBBY CHECK (Hotbar only) ---
+      // Hotbar slots are 36 to 44 in Mineflayer
+      const hotbarItems = this.bot.inventory.slots.slice(36, 45);
+      const clockInHotbar = hotbarItems.find(item => item && (item.name.includes('clock') || item.name.includes('compass')));
 
-      if (grass) {
-        if (!this.isInGame) addWebLog(this.username, "✅ Grass detected. Confirming In-Game status.");
-        this.isInGame = true;
-        this.status = 'In-Game';
-        clearInterval(this.joinInterval);
-        return;
+      if (!clockInHotbar) {
+        // No clock in hotbar = We are likely In-Game or in Queue
+        if (this.status !== 'In-Game') {
+            this.status = 'In-Game';
+            addWebLog(this.username, "Clock gone from hotbar. Status: In-Game.");
+        }
+        return; 
       }
 
-      // --- 2. JOIN LOGIC (Lobby Interaction) ---
-      // We check if a menu is already open first.
-      if (this.bot.currentWindow) {
-        addWebLog(this.username, `Menu "${this.bot.currentWindow.title}" is open. Clicking slot 19...`);
-        // Mode 0, Button 0 = Simple Left Click (doesn't "grab" the item)
-        await this.bot.clickWindow(21, 0, 0); 
-        return;
-      }
+      this.status = 'Lobby (Joining)';
 
-      // If no menu, try to use the clock.
-      const clock = this.bot.inventory.items().find(i => i.name.includes('clock') || i.name.includes('compass'));
-      if (clock) {
-        try {
-          await this.bot.equip(clock, 'hand');
-          this.bot.activateItem(); // Right-click to open menu
-          addWebLog(this.username, "Right-clicked clock to open menu...");
-        } catch (e) {}
+      // --- 2. INTERACTION ---
+      try {
+        // If a window is already open, just click
+        if (this.bot.currentWindow) {
+          addWebLog(this.username, "Selector open. Clicking slot 19...");
+          await this.bot.clickWindow(19, 0, 0);
+          return;
+        }
+
+        // Find which hotbar slot the clock is in (0-8)
+        const slotIndex = this.bot.inventory.slots.indexOf(clockInHotbar) - 36;
+        
+        this.bot.setQuickBarSlot(slotIndex); // Select the slot
+        await this.wait(500);
+        this.bot.activateItem(); // Right-click
+        addWebLog(this.username, `Using clock in hotbar slot ${slotIndex}...`);
+
+      } catch (e) {
+        // Error handling
       }
-    }, 7000);
+    }, 8000);
   }
 
   cleanup() {
     if (this.joinInterval) clearInterval(this.joinInterval);
-    if (this.afkInterval) clearInterval(this.afkInterval);
   }
 
   sendChat(msg) { if (this.bot) this.bot.chat(msg); }
@@ -132,10 +118,9 @@ class BotInstance {
   wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 }
 
-// --- INITIALIZE ---
 ACCOUNTS.forEach((name, i) => { bots[name] = new BotInstance(name, i); });
 
-// --- DASHBOARD (EXPRESS) ---
+// --- DASHBOARD ---
 app.get('/', (req, res) => {
   let botRows = Object.keys(bots).map(name => `
     <tr>
@@ -153,28 +138,25 @@ app.get('/', (req, res) => {
       <head><meta name="viewport" content="width=device-width, initial-scale=1">
       <style>
         body { font-family: sans-serif; background: #121212; color: #fff; padding: 10px; }
-        table { width: 100%; border-collapse: collapse; margin-bottom: 15px; background: #1a1a1a; }
-        th, td { padding: 12px; border: 1px solid #333; text-align: left; }
-        button { padding: 8px 12px; border-radius: 4px; border: none; background: #007bff; color: white; cursor: pointer; margin-right: 2px; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 15px; }
+        td, th { padding: 10px; border: 1px solid #333; text-align: left; }
+        button { padding: 8px 12px; border-radius: 4px; border: none; background: #007bff; color: white; cursor: pointer; }
         .logs { background: #000; height: 400px; overflow-y: scroll; padding: 10px; font-family: monospace; font-size: 12px; border: 1px solid #444; color: #0f0; }
-        .btn-group { display: flex; gap: 5px; margin-bottom: 10px; }
       </style></head>
       <body>
-        <h3>Bot Command Center</h3>
+        <h3>Bot Dashboard</h3>
         <table><tr><th>Bot</th><th>Status</th><th>Actions</th></tr>${botRows}</table>
-        <div class="btn-group">
-          <button onclick="fetch('/tpa-all')" style="background:#28a745; flex:1">TPA ALL</button>
-          <button onclick="sendChatAll()" style="background:#444; flex:1">CHAT ALL</button>
-        </div>
-        <strong>Live Console:</strong>
+        <button onclick="fetch('/tpa-all')" style="background:#28a745; width:48%">TPA ALL</button>
+        <button onclick="sendChatAll()" style="background:#444; width:48%">CHAT ALL</button>
+        <div style="margin-top:10px;"><strong>Live Logs:</strong></div>
         <div class="logs" id="logBox">${webLogs.join('<br>')}</div>
         <script>
           function sendChat(name) {
-            let m = prompt('Message/Command for ' + name);
+            let m = prompt('Message for ' + name);
             if(m) fetch('/chat/' + name + '?msg=' + encodeURIComponent(m));
           }
           function sendChatAll() {
-            let m = prompt('Message for ALL bots');
+            let m = prompt('Message for ALL');
             if(m) fetch('/chat-all?msg=' + encodeURIComponent(m));
           }
           setInterval(() => {
@@ -198,5 +180,5 @@ app.get('/tpa-all', (req, res) => { Object.values(bots).forEach(b => b.tpa()); r
 app.get('/chat/:name', (req, res) => { bots[req.params.name]?.sendChat(req.query.msg); res.sendStatus(200); });
 app.get('/chat-all', (req, res) => { Object.values(bots).forEach(b => b.sendChat(req.query.msg)); res.sendStatus(200); });
 
-app.listen(port, () => console.log(`Dashboard listening on port ${port}`));
+app.listen(port, () => console.log(`Dashboard on ${port}`));
 
