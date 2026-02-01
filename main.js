@@ -12,7 +12,7 @@ const GLOBAL_CONFIG = {
   targetPlayer: 'ditnshyky'
 };
 
-const ACCOUNTS = ['ws_lv', 'ws_lv2', 'ws_lv3', 'ws_lv4', 'ws_lv5']; 
+const ACCOUNTS = ['ws_lv', 'dawg', 'yakk1k']; 
 const bots = {};
 let webLogs = [];
 
