@@ -1,0 +1,15 @@
+name: Fixed Time WIB Cron
+
+on:
+  schedule:
+    - cron: "0 14 * * *"   # 21:00 WIB
+  workflow_dispatch:
+
+jobs:
+  job:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run script
+        run: |
+          node sucker.js
