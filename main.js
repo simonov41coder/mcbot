@@ -1,5 +1,7 @@
 const mineflayer = require('mineflayer');
 const express = require('express');
+const fs = require('fs'); // Added for file logging
+const path = require('path');
 const app = express();
 const port = process.env.PORT || 8080;
 
@@ -14,11 +16,21 @@ const GLOBAL_CONFIG = {
 const ACCOUNTS = ['ws_lv', 'penguras_money', 'sr41'];
 const bots = {};
 let webLogs = [];
+const DEATH_LOG_FILE = path.join(__dirname, 'deaths.txt');
+
+// Helper to log specifically to a text file
+function logToFile(content) {
+  const timestamp = new Date().toLocaleString();
+  const logEntry = `[${timestamp}] ${content}\n`;
+  fs.appendFile(DEATH_LOG_FILE, logEntry, (err) => {
+    if (err) console.error('Failed to save death log:', err);
+  });
+}
 
 function addWebLog(name, msg) {
   const cleanMsg = msg.replace(/§[0-9a-fk-or]/g, '');
   
-  // GARBAGE FILTER: Ignore status bars/mana/health spam
+  // GARBAGE FILTER
   if (cleanMsg.includes('❤') || cleanMsg.includes('★') || cleanMsg.includes('⛨')) {
     return;
   }
@@ -48,19 +60,22 @@ class BotInstance {
       auth: 'offline'
     });
 
-    // Handle Chat & System Messages
     this.bot.on('message', (jsonMsg) => addWebLog(this.username, jsonMsg.toString()));
 
-    // DEATH LOGGING & REASON CAPTURE
+    // DEATH LOGGING TO FILE
     this.bot.on('death', () => {
       this.status = 'Dead ☠';
-      addWebLog(this.username, `<b style="color: #ff5555">!!! BOT DIED !!!</b> Attempting to respawn...`);
+      const deathAlert = `BOT DIED: ${this.username}`;
+      addWebLog(this.username, `<b style="color: #ff5555">!!! ${deathAlert} !!!</b>`);
+      logToFile(deathAlert); // Logs the basic death event to file
     });
 
     this.bot.on('chat', (username, message) => {
-      const deathKeywords = ['slain', 'killed', 'died', 'burnt', 'fell', 'shot', 'lava', 'slapped'];
+      const deathKeywords = ['slain', 'killed', 'died', 'burnt', 'fell', 'shot', 'lava', 'slapped', 'murdered'];
       if (message.includes(this.username) && deathKeywords.some(k => message.toLowerCase().includes(k))) {
-        addWebLog(this.username, `<b style="color: #ffaa00; background: #330000;">[DEATH REASON]</b> ${message}`);
+        const fullReason = `[KILL LOG] ${message}`;
+        addWebLog(this.username, `<b style="color: #ffaa00; background: #330000;">${fullReason}</b>`);
+        logToFile(fullReason); // Logs the full reason/killer to file
       }
     });
 
@@ -73,7 +88,6 @@ class BotInstance {
       this.startJoinCheck();
     });
 
-    // Reset status on respawn
     this.bot.on('spawn', () => {
       if (this.status === 'Dead ☠') {
         this.status = 'In-Game';
@@ -116,7 +130,7 @@ class BotInstance {
         this.bot.setQuickBarSlot(slotIndex);
         await this.wait(500);
         this.bot.activateItem();
-      } catch (e) { /* Interaction silent fail */ }
+      } catch (e) {}
     }, 8000);
   }
 
@@ -164,7 +178,7 @@ app.get('/', (req, res) => {
         <div class="controls">
             <button onclick="fetch('/tpa-all')" style="background:#28a745; flex: 1">TPA ALL</button>
             <button onclick="sendChatAll()" style="background:#444; flex: 1">CHAT ALL</button>
-            <button onclick="fetch('/clear-logs')" style="background:#666; flex: 0.5">CLEAR LOGS</button>
+            <button onclick="window.open('/view-deaths')" style="background:#8b0000; flex: 1">VIEW DEATH FILE</button>
         </div>
         <div style="margin-top:10px;"><strong>Live Console:</strong></div>
         <div class="logs" id="logBox">${webLogs.join('<br>')}</div>
@@ -192,7 +206,14 @@ app.get('/', (req, res) => {
 });
 
 app.get('/get-logs', (req, res) => res.send(webLogs.join('<br>')));
-app.get('/clear-logs', (req, res) => { webLogs = []; res.sendStatus(200); });
+app.get('/view-deaths', (req, res) => {
+    if (fs.existsSync(DEATH_LOG_FILE)) {
+        res.type('text/plain');
+        res.sendFile(DEATH_LOG_FILE);
+    } else {
+        res.send("No deaths recorded yet.");
+    }
+});
 app.get('/reset/:name', (req, res) => { bots[req.params.name]?.bot.quit(); res.sendStatus(200); });
 app.get('/tpa/:name', (req, res) => { bots[req.params.name]?.tpa(); res.sendStatus(200); });
 app.get('/tpa-all', (req, res) => { Object.values(bots).forEach(b => b.tpa()); res.sendStatus(200); });
