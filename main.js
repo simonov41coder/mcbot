@@ -1,6 +1,6 @@
 const mineflayer = require('mineflayer');
 const express = require('express');
-const fs = require('fs'); // Added for file logging
+const fs = require('fs');
 const path = require('path');
 const app = express();
 const port = process.env.PORT || 8080;
@@ -18,22 +18,23 @@ const bots = {};
 let webLogs = [];
 const DEATH_LOG_FILE = path.join(__dirname, 'deaths.txt');
 
-// Helper to log specifically to a text file
+// --- UTILS ---
+
 function logToFile(content) {
-  const timestamp = new Date().toLocaleString();
+  const timestamp = new Date().toLocaleString('en-GB', { 
+    timeZone: 'Asia/Jakarta', 
+    timeZoneName: 'short' 
+  });
   const logEntry = `[${timestamp}] ${content}\n`;
   fs.appendFile(DEATH_LOG_FILE, logEntry, (err) => {
-    if (err) console.error('Failed to save death log:', err);
+    if (err) console.error('File Save Error:', err);
   });
 }
 
 function addWebLog(name, msg) {
   const cleanMsg = msg.replace(/§[0-9a-fk-or]/g, '');
-  
-  // GARBAGE FILTER
-  if (cleanMsg.includes('❤') || cleanMsg.includes('★') || cleanMsg.includes('⛨')) {
-    return;
-  }
+  // GARBAGE FILTER: Block status bars/mana/health
+  if (cleanMsg.includes('❤') || cleanMsg.includes('★') || cleanMsg.includes('⛨')) return;
 
   const entry = `<span style="color: #888">[${new Date().toLocaleTimeString()}]</span> <b style="color: #55ff55">[${name}]</b> ${cleanMsg}`;
   webLogs.unshift(entry);
@@ -44,7 +45,8 @@ class BotInstance {
   constructor(username, index) {
     this.username = username;
     this.status = 'Initializing';
-    this.isInGame = false;
+    this.lastPos = null;
+    this.moveLogCooldown = false;
 
     setTimeout(() => this.connect(), index * 10000);
   }
@@ -60,22 +62,42 @@ class BotInstance {
       auth: 'offline'
     });
 
-    this.bot.on('message', (jsonMsg) => addWebLog(this.username, jsonMsg.toString()));
-
-    // DEATH LOGGING TO FILE
-    this.bot.on('death', () => {
-      this.status = 'Dead ☠';
-      const deathAlert = `BOT DIED: ${this.username}`;
-      addWebLog(this.username, `<b style="color: #ff5555">!!! ${deathAlert} !!!</b>`);
-      logToFile(deathAlert); // Logs the basic death event to file
+    // --- LOGIC: KILLER & SYSTEM MESSAGE CAPTURE ---
+    this.bot.on('message', (jsonMsg) => {
+      const msg = jsonMsg.toString();
+      const deathKeywords = ['slain', 'killed', 'died', 'burnt', 'fell', 'shot', 'lava', 'slapped', 'murdered'];
+      
+      if (msg.includes(this.username) && deathKeywords.some(k => msg.toLowerCase().includes(k))) {
+        const nearby = this.getNearbyPlayers();
+        const entry = `[DEATH] ${msg} | Nearby at time of death: ${nearby}`;
+        addWebLog(this.username, `<b style="color: #ffaa00; background: #330000;">${entry}</b>`);
+        logToFile(entry);
+      } else {
+        addWebLog(this.username, msg);
+      }
     });
 
-    this.bot.on('chat', (username, message) => {
-      const deathKeywords = ['slain', 'killed', 'died', 'burnt', 'fell', 'shot', 'lava', 'slapped', 'murdered'];
-      if (message.includes(this.username) && deathKeywords.some(k => message.toLowerCase().includes(k))) {
-        const fullReason = `[KILL LOG] ${message}`;
-        addWebLog(this.username, `<b style="color: #ffaa00; background: #330000;">${fullReason}</b>`);
-        logToFile(fullReason); // Logs the full reason/killer to file
+    // --- LOGIC: MOVEMENT TRACKING (Who is pushing the bot?) ---
+    this.bot.on('move', () => {
+      if (!this.bot.entity || this.status !== 'In-Game' || this.moveLogCooldown) return;
+
+      if (!this.lastPos) {
+        this.lastPos = this.bot.entity.position.clone();
+        return;
+      }
+
+      const dist = this.bot.entity.position.distanceTo(this.lastPos);
+      if (dist > 3) { // If bot moved more than 3 blocks suddenly
+        this.moveLogCooldown = true;
+        const nearby = this.getNearbyPlayers();
+        const moveEntry = `[MOVED] ${this.username} moved ${dist.toFixed(1)}m. Suspects nearby: ${nearby}`;
+        
+        addWebLog(this.username, `<i style="color: #55aaff">${moveEntry}</i>`);
+        logToFile(moveEntry);
+
+        this.lastPos = this.bot.entity.position.clone();
+        // Cooldown to prevent log spam while being pushed
+        setTimeout(() => { this.moveLogCooldown = false; }, 10000);
       }
     });
 
@@ -91,53 +113,53 @@ class BotInstance {
     this.bot.on('spawn', () => {
       if (this.status === 'Dead ☠') {
         this.status = 'In-Game';
-        addWebLog(this.username, "Respawned successfully.");
+        addWebLog(this.username, "Respawned.");
       }
     });
 
+    this.bot.on('death', () => { this.status = 'Dead ☠'; });
     this.bot.on('end', (reason) => {
       this.status = 'Offline';
-      this.isInGame = false;
       addWebLog(this.username, `Disconnected: ${reason}`);
       setTimeout(() => this.connect(), 20000);
     });
-
     this.bot.on('error', (err) => addWebLog(this.username, `Error: ${err.message}`));
+  }
+
+  getNearbyPlayers() {
+    if (!this.bot.entities) return "None";
+    const players = Object.values(this.bot.entities)
+      .filter(e => e.type === 'player' && e.username !== this.bot.username)
+      .map(p => p.username);
+    return players.length > 0 ? players.join(', ') : "No players nearby";
   }
 
   startJoinCheck() {
     this.joinInterval = setInterval(async () => {
       if (!this.bot || !this.bot.inventory) return;
+      const hotbar = this.bot.inventory.slots.slice(36, 45);
+      const clock = hotbar.find(item => item && (item.name.includes('clock') || item.name.includes('compass')));
 
-      const hotbarItems = this.bot.inventory.slots.slice(36, 45);
-      const clockInHotbar = hotbarItems.find(item => item && (item.name.includes('clock') || item.name.includes('compass')));
-
-      if (!clockInHotbar) {
-        if (this.status !== 'In-Game' && this.status !== 'Dead ☠') {
-            this.status = 'In-Game';
-        }
+      if (!clock) {
+        if (this.status !== 'In-Game' && this.status !== 'Dead ☠') this.status = 'In-Game';
         return;
       }
 
       this.status = 'Lobby (Joining)';
-
       try {
         if (this.bot.currentWindow) {
           await this.bot.clickWindow(20, 0, 0);
           return;
         }
-        const slotIndex = this.bot.inventory.slots.indexOf(clockInHotbar) - 36;
-        this.bot.setQuickBarSlot(slotIndex);
+        const slot = this.bot.inventory.slots.indexOf(clock) - 36;
+        this.bot.setQuickBarSlot(slot);
         await this.wait(500);
         this.bot.activateItem();
       } catch (e) {}
     }, 8000);
   }
 
-  cleanup() {
-    if (this.joinInterval) clearInterval(this.joinInterval);
-  }
-
+  cleanup() { if (this.joinInterval) clearInterval(this.joinInterval); }
   sendChat(msg) { if (this.bot) this.bot.chat(msg); }
   tpa() { if (this.bot) this.bot.chat(`/tpa ${GLOBAL_CONFIG.targetPlayer}`); }
   wait(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -160,41 +182,32 @@ app.get('/', (req, res) => {
 
   res.send(`
     <html>
-      <head>
-        <title>Bot Panel</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-          body { font-family: sans-serif; background: #121212; color: #fff; padding: 10px; }
-          table { width: 100%; border-collapse: collapse; margin-bottom: 15px; }
-          td, th { padding: 10px; border: 1px solid #333; text-align: left; }
-          button { padding: 8px 12px; border-radius: 4px; border: none; background: #007bff; color: white; cursor: pointer; font-weight: bold; }
-          .logs { background: #000; height: 450px; overflow-y: scroll; padding: 10px; font-family: 'Consolas', monospace; font-size: 12px; border: 1px solid #444; color: #bbb; line-height: 1.5; }
-          .controls { display: flex; gap: 10px; margin-bottom: 10px; }
-        </style>
-      </head>
+      <head><title>Bot Master</title><meta name="viewport" content="width=device-width, initial-scale=1">
+      <style>
+        body { font-family: sans-serif; background: #121212; color: #fff; padding: 10px; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 15px; }
+        td, th { padding: 10px; border: 1px solid #333; text-align: left; }
+        button { padding: 8px 12px; border: none; border-radius: 4px; background: #007bff; color: white; cursor: pointer; font-weight: bold; }
+        .logs { background: #000; height: 500px; overflow-y: scroll; padding: 10px; font-family: monospace; font-size: 12px; border: 1px solid #444; color: #bbb; }
+        .controls { display: flex; gap: 10px; margin-bottom: 10px; }
+      </style></head>
       <body>
-        <h3>Bot Controller</h3>
+        <h3>Bot Dashboard</h3>
         <table><tr><th>Bot</th><th>Status</th><th>Actions</th></tr>${botRows}</table>
         <div class="controls">
             <button onclick="fetch('/tpa-all')" style="background:#28a745; flex: 1">TPA ALL</button>
-            <button onclick="sendChatAll()" style="background:#444; flex: 1">CHAT ALL</button>
-            <button onclick="window.open('/view-deaths')" style="background:#8b0000; flex: 1">VIEW DEATH FILE</button>
+            <button onclick="window.open('/view-deaths')" style="background:#8b0000; flex: 1">VIEW LOG FILE</button>
         </div>
-        <div style="margin-top:10px;"><strong>Live Console:</strong></div>
         <div class="logs" id="logBox">${webLogs.join('<br>')}</div>
         <script>
           function sendChat(name) {
             let m = prompt('Message for ' + name);
             if(m) fetch('/chat/' + name + '?msg=' + encodeURIComponent(m));
           }
-          function sendChatAll() {
-            let m = prompt('Message for ALL');
-            if(m) fetch('/chat-all?msg=' + encodeURIComponent(m));
-          }
           setInterval(() => {
             fetch('/get-logs').then(r => r.text()).then(html => {
               const b = document.getElementById('logBox');
-              const down = b.scrollHeight - b.clientHeight <= b.scrollTop + 20;
+              const down = b.scrollHeight - b.clientHeight <= b.scrollTop + 30;
               b.innerHTML = html;
               if(down) b.scrollTop = b.scrollHeight;
             });
@@ -208,17 +221,15 @@ app.get('/', (req, res) => {
 app.get('/get-logs', (req, res) => res.send(webLogs.join('<br>')));
 app.get('/view-deaths', (req, res) => {
     if (fs.existsSync(DEATH_LOG_FILE)) {
-        res.type('text/plain');
-        res.sendFile(DEATH_LOG_FILE);
+        res.type('text/plain').sendFile(DEATH_LOG_FILE);
     } else {
-        res.send("No deaths recorded yet.");
+        res.send("No logs recorded.");
     }
 });
 app.get('/reset/:name', (req, res) => { bots[req.params.name]?.bot.quit(); res.sendStatus(200); });
 app.get('/tpa/:name', (req, res) => { bots[req.params.name]?.tpa(); res.sendStatus(200); });
 app.get('/tpa-all', (req, res) => { Object.values(bots).forEach(b => b.tpa()); res.sendStatus(200); });
 app.get('/chat/:name', (req, res) => { bots[req.params.name]?.sendChat(req.query.msg); res.sendStatus(200); });
-app.get('/chat-all', (req, res) => { Object.values(bots).forEach(b => b.sendChat(req.query.msg)); res.sendStatus(200); });
 
-app.listen(port, () => console.log(`Bot Dashboard running on port ${port}`));
+app.listen(port, () => console.log(`Dashboard active on port ${port}`));
 
