@@ -4,7 +4,7 @@ const CONFIG = {
   host: '185.207.166.12',
   port: 25565,
   version: '1.20.1',
-  username: 'dogyy',
+  username: 'guguk_lucuk',
   password: 'woylah12',
   joinSlot: 20 // Updated to 20 as requested
 };
@@ -23,8 +23,6 @@ bot.once('spawn', async () => {
   console.log('[Status] Spawned in lobby. Authenticating...');
   
   // Auth Sequence
-  await wait(2000);
-  bot.chat(`/register ${CONFIG.password}`);
   await wait(1000);
   bot.chat(`/login ${CONFIG.password}`);
   

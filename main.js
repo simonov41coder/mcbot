@@ -42,7 +42,17 @@ class BotInstance {
       auth: 'offline'
     });
 
-    this.bot.on('message', (jsonMsg) => addWebLog(this.username, jsonMsg.toString()));
+    this.bot.on('message', (jsonMsg) => {
+      const msg = jsonMsg.toString();
+
+      // FILTER: Ignore messages containing health/mana symbols
+      // This looks for strings containing ❤, ★, or ⛨
+      if (msg.includes('❤') || msg.includes('★') || msg.includes('⛨')) {
+        return; // Drop the message, don't log it
+      }
+
+      addWebLog(this.username, msg);
+    });
 
     this.bot.once('spawn', async () => {
       this.status = 'Lobby (Auth)';
