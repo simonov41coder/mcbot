@@ -11,15 +11,21 @@ const GLOBAL_CONFIG = {
   targetPlayer: 'ditnshyky'
 };
 
-const ACCOUNTS = ['ws_lv', 'penguras_money', 'sr41']; 
+const ACCOUNTS = ['ws_lv', 'penguras_money', 'sr41'];
 const bots = {};
 let webLogs = [];
 
 function addWebLog(name, msg) {
   const cleanMsg = msg.replace(/§[0-9a-fk-or]/g, '');
+  
+  // GARBAGE FILTER: Ignore status bars/mana/health spam
+  if (cleanMsg.includes('❤') || cleanMsg.includes('★') || cleanMsg.includes('⛨')) {
+    return;
+  }
+
   const entry = `<span style="color: #888">[${new Date().toLocaleTimeString()}]</span> <b style="color: #55ff55">[${name}]</b> ${cleanMsg}`;
   webLogs.unshift(entry);
-  if (webLogs.length > 80) webLogs.pop();
+  if (webLogs.length > 100) webLogs.pop();
 }
 
 class BotInstance {
@@ -27,7 +33,7 @@ class BotInstance {
     this.username = username;
     this.status = 'Initializing';
     this.isInGame = false;
-    
+
     setTimeout(() => this.connect(), index * 10000);
   }
 
@@ -42,28 +48,37 @@ class BotInstance {
       auth: 'offline'
     });
 
-    this.bot.on('message', (jsonMsg) => {
-      const msg = jsonMsg.toString();
+    // Handle Chat & System Messages
+    this.bot.on('message', (jsonMsg) => addWebLog(this.username, jsonMsg.toString()));
 
-      // FILTER: Ignore messages containing health/mana symbols
-      // This looks for strings containing ❤, ★, or ⛨
-      if (msg.includes('❤') || msg.includes('★') || msg.includes('⛨')) {
-        return; // Drop the message, don't log it
+    // DEATH LOGGING & REASON CAPTURE
+    this.bot.on('death', () => {
+      this.status = 'Dead ☠';
+      addWebLog(this.username, `<b style="color: #ff5555">!!! BOT DIED !!!</b> Attempting to respawn...`);
+    });
+
+    this.bot.on('chat', (username, message) => {
+      const deathKeywords = ['slain', 'killed', 'died', 'burnt', 'fell', 'shot', 'lava', 'slapped'];
+      if (message.includes(this.username) && deathKeywords.some(k => message.toLowerCase().includes(k))) {
+        addWebLog(this.username, `<b style="color: #ffaa00; background: #330000;">[DEATH REASON]</b> ${message}`);
       }
-
-      addWebLog(this.username, msg);
     });
 
     this.bot.once('spawn', async () => {
       this.status = 'Lobby (Auth)';
-      
-      // Auth
       await this.wait(2000);
       this.bot.chat(`/register ${GLOBAL_CONFIG.password}`);
       await this.wait(1500);
       this.bot.chat(`/login ${GLOBAL_CONFIG.password}`);
-      
       this.startJoinCheck();
+    });
+
+    // Reset status on respawn
+    this.bot.on('spawn', () => {
+      if (this.status === 'Dead ☠') {
+        this.status = 'In-Game';
+        addWebLog(this.username, "Respawned successfully.");
+      }
     });
 
     this.bot.on('end', (reason) => {
@@ -80,42 +95,28 @@ class BotInstance {
     this.joinInterval = setInterval(async () => {
       if (!this.bot || !this.bot.inventory) return;
 
-      // --- 1. LOBBY CHECK (Hotbar only) ---
-      // Hotbar slots are 36 to 44 in Mineflayer
       const hotbarItems = this.bot.inventory.slots.slice(36, 45);
       const clockInHotbar = hotbarItems.find(item => item && (item.name.includes('clock') || item.name.includes('compass')));
 
       if (!clockInHotbar) {
-        // No clock in hotbar = We are likely In-Game or in Queue
-        if (this.status !== 'In-Game') {
+        if (this.status !== 'In-Game' && this.status !== 'Dead ☠') {
             this.status = 'In-Game';
-            addWebLog(this.username, "Clock gone from hotbar. Status: In-Game.");
         }
-        return; 
+        return;
       }
 
       this.status = 'Lobby (Joining)';
 
-      // --- 2. INTERACTION ---
       try {
-        // If a window is already open, just click
         if (this.bot.currentWindow) {
-          addWebLog(this.username, "Selector open. Clicking slot 20...");
           await this.bot.clickWindow(20, 0, 0);
           return;
         }
-
-        // Find which hotbar slot the clock is in (0-8)
         const slotIndex = this.bot.inventory.slots.indexOf(clockInHotbar) - 36;
-        
-        this.bot.setQuickBarSlot(slotIndex); // Select the slot
+        this.bot.setQuickBarSlot(slotIndex);
         await this.wait(500);
-        this.bot.activateItem(); // Right-click
-        addWebLog(this.username, `Using clock in hotbar slot ${slotIndex}...`);
-
-      } catch (e) {
-        // Error handling
-      }
+        this.bot.activateItem();
+      } catch (e) { /* Interaction silent fail */ }
     }, 8000);
   }
 
@@ -135,7 +136,7 @@ app.get('/', (req, res) => {
   let botRows = Object.keys(bots).map(name => `
     <tr>
       <td>${name}</td>
-      <td style="color:${bots[name].status === 'In-Game' ? '#28a745' : '#ffc107'}"><b>${bots[name].status}</b></td>
+      <td style="color:${bots[name].status === 'In-Game' ? '#28a745' : (bots[name].status === 'Dead ☠' ? '#ff5555' : '#ffc107')}"><b>${bots[name].status}</b></td>
       <td>
         <button onclick="fetch('/tpa/${name}')">TPA</button>
         <button onclick="sendChat('${name}')" style="background:#6c757d">Chat</button>
@@ -145,20 +146,27 @@ app.get('/', (req, res) => {
 
   res.send(`
     <html>
-      <head><meta name="viewport" content="width=device-width, initial-scale=1">
-      <style>
-        body { font-family: sans-serif; background: #121212; color: #fff; padding: 10px; }
-        table { width: 100%; border-collapse: collapse; margin-bottom: 15px; }
-        td, th { padding: 10px; border: 1px solid #333; text-align: left; }
-        button { padding: 8px 12px; border-radius: 4px; border: none; background: #007bff; color: white; cursor: pointer; }
-        .logs { background: #000; height: 400px; overflow-y: scroll; padding: 10px; font-family: monospace; font-size: 12px; border: 1px solid #444; color: #0f0; }
-      </style></head>
+      <head>
+        <title>Bot Panel</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+          body { font-family: sans-serif; background: #121212; color: #fff; padding: 10px; }
+          table { width: 100%; border-collapse: collapse; margin-bottom: 15px; }
+          td, th { padding: 10px; border: 1px solid #333; text-align: left; }
+          button { padding: 8px 12px; border-radius: 4px; border: none; background: #007bff; color: white; cursor: pointer; font-weight: bold; }
+          .logs { background: #000; height: 450px; overflow-y: scroll; padding: 10px; font-family: 'Consolas', monospace; font-size: 12px; border: 1px solid #444; color: #bbb; line-height: 1.5; }
+          .controls { display: flex; gap: 10px; margin-bottom: 10px; }
+        </style>
+      </head>
       <body>
-        <h3>Bot Dashboard</h3>
+        <h3>Bot Controller</h3>
         <table><tr><th>Bot</th><th>Status</th><th>Actions</th></tr>${botRows}</table>
-        <button onclick="fetch('/tpa-all')" style="background:#28a745; width:48%">TPA ALL</button>
-        <button onclick="sendChatAll()" style="background:#444; width:48%">CHAT ALL</button>
-        <div style="margin-top:10px;"><strong>Live Logs:</strong></div>
+        <div class="controls">
+            <button onclick="fetch('/tpa-all')" style="background:#28a745; flex: 1">TPA ALL</button>
+            <button onclick="sendChatAll()" style="background:#444; flex: 1">CHAT ALL</button>
+            <button onclick="fetch('/clear-logs')" style="background:#666; flex: 0.5">CLEAR LOGS</button>
+        </div>
+        <div style="margin-top:10px;"><strong>Live Console:</strong></div>
         <div class="logs" id="logBox">${webLogs.join('<br>')}</div>
         <script>
           function sendChat(name) {
@@ -172,11 +180,11 @@ app.get('/', (req, res) => {
           setInterval(() => {
             fetch('/get-logs').then(r => r.text()).then(html => {
               const b = document.getElementById('logBox');
-              const down = b.scrollHeight - b.clientHeight <= b.scrollTop + 5;
+              const down = b.scrollHeight - b.clientHeight <= b.scrollTop + 20;
               b.innerHTML = html;
               if(down) b.scrollTop = b.scrollHeight;
             });
-          }, 3000);
+          }, 2000);
         </script>
       </body>
     </html>
@@ -184,11 +192,12 @@ app.get('/', (req, res) => {
 });
 
 app.get('/get-logs', (req, res) => res.send(webLogs.join('<br>')));
+app.get('/clear-logs', (req, res) => { webLogs = []; res.sendStatus(200); });
 app.get('/reset/:name', (req, res) => { bots[req.params.name]?.bot.quit(); res.sendStatus(200); });
 app.get('/tpa/:name', (req, res) => { bots[req.params.name]?.tpa(); res.sendStatus(200); });
 app.get('/tpa-all', (req, res) => { Object.values(bots).forEach(b => b.tpa()); res.sendStatus(200); });
 app.get('/chat/:name', (req, res) => { bots[req.params.name]?.sendChat(req.query.msg); res.sendStatus(200); });
 app.get('/chat-all', (req, res) => { Object.values(bots).forEach(b => b.sendChat(req.query.msg)); res.sendStatus(200); });
 
-app.listen(port, () => console.log(`Dashboard on ${port}`));
+app.listen(port, () => console.log(`Bot Dashboard running on port ${port}`));
 
