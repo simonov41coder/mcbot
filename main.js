@@ -15,8 +15,8 @@ const GLOBAL_CONFIG = {
 
 const ACCOUNTS = ['ws_lv', 'penguras_money', 'sr41'];
 const bots = {};
-let rawWebLogs = []; // This will hold the truly raw data
-const RAW_LOG_FILE = path.join(__dirname, 'raw_console.txt');
+let webLogs = [];
+const DEATH_LOG_FILE = path.join(__dirname, 'deaths.txt');
 
 // --- UTILS ---
 
@@ -27,18 +27,20 @@ function getJakartaTime() {
   });
 }
 
-function logToRawFile(botName, content) {
+function logToFile(botName, content) {
   const logEntry = `[${getJakartaTime()}] [${botName}] ${content}\n`;
-  fs.appendFile(RAW_LOG_FILE, logEntry, (err) => {
+  fs.appendFile(DEATH_LOG_FILE, logEntry, (err) => {
     if (err) console.error('Write Error:', err);
   });
 }
 
-function addRawWebLog(name, msg) {
-  // No filters. No cleaning. Just the raw string.
-  const entry = `<span style="color: #888">[${new Date().toLocaleTimeString()}]</span> <b style="color: #55ff55">[${name}]</b> <span style="color: #eee">${msg}</span>`;
-  rawWebLogs.unshift(entry);
-  if (rawWebLogs.length > 150) rawWebLogs.pop();
+function addWebLog(name, msg) {
+  const cleanMsg = msg.replace(/§[0-9a-fk-or]/g, '');
+  if (cleanMsg.includes('❤') || cleanMsg.includes('★') || cleanMsg.includes('⛨')) return;
+
+  const entry = `<span style="color: #888">[${new Date().toLocaleTimeString()}]</span> <b style="color: #55ff55">[${name}]</b> ${cleanMsg}`;
+  webLogs.unshift(entry);
+  if (webLogs.length > 100) webLogs.pop();
 }
 
 class BotInstance {
@@ -59,28 +61,30 @@ class BotInstance {
     });
 
     this.bot.on('message', (jsonMsg) => {
-      // .toString() gives the text, but we aren't filtering it anymore.
-      const rawText = jsonMsg.toString();
-      
-      logToRawFile(this.username, rawText);
-      addRawWebLog(this.username, rawText);
+      const msg = jsonMsg.toString();
+      logToFile(this.username, msg);
+      addWebLog(this.username, msg);
+    });
+
+    this.bot.on('death', () => {
+      this.status = 'Dead ☠';
+      logToFile(this.username, "!!! BOT DIED !!!");
     });
 
     this.bot.once('spawn', async () => {
-      this.status = 'Online';
+      this.status = 'Lobby (Auth)';
       await this.wait(2000);
       this.bot.chat(`/login ${GLOBAL_CONFIG.password}`);
       this.startJoinCheck();
     });
 
-    this.bot.on('death', () => {
-      this.status = 'Dead ☠';
-      logToRawFile(this.username, ">>> EVENT: BOT_DIED <<<");
+    this.bot.on('spawn', () => {
+      if (this.status === 'Dead ☠') this.status = 'In-Game';
     });
 
     this.bot.on('end', (reason) => {
       this.status = 'Offline';
-      logToRawFile(this.username, `>>> DISCONNECT: ${reason} <<<`);
+      logToFile(this.username, `Disconnected: ${reason}`);
       setTimeout(() => this.connect(), 15000);
     });
   }
@@ -90,20 +94,21 @@ class BotInstance {
       if (!this.bot || !this.bot.inventory) return;
       const hotbar = this.bot.inventory.slots.slice(36, 45);
       const selector = hotbar.find(i => i && (i.name.includes('clock') || i.name.includes('compass')));
-
-      if (selector) {
-        this.status = 'Lobby';
-        try {
-          if (this.bot.currentWindow) { await this.bot.clickWindow(20, 0, 0); return; }
-          this.bot.setQuickBarSlot(this.bot.inventory.slots.indexOf(selector) - 36);
-          this.bot.activateItem();
-        } catch (e) {}
-      } else {
-        this.status = 'In-Game';
+      if (!selector) {
+         if (this.status !== 'In-Game' && this.status !== 'Dead ☠') this.status = 'In-Game';
+         return;
       }
+      this.status = 'Lobby (Joining)';
+      try {
+        if (this.bot.currentWindow) { await this.bot.clickWindow(20, 0, 0); return; }
+        this.bot.setQuickBarSlot(this.bot.inventory.slots.indexOf(selector) - 36);
+        this.bot.activateItem();
+      } catch (e) {}
     }, 6000);
   }
 
+  sendChat(msg) { if (this.bot) this.bot.chat(msg); }
+  tpa() { if (this.bot) this.bot.chat(`/tpa ${GLOBAL_CONFIG.targetPlayer}`); }
   wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 }
 
@@ -111,41 +116,65 @@ ACCOUNTS.forEach((name, i) => { bots[name] = new BotInstance(name, i); });
 
 // --- DASHBOARD ---
 app.get('/', (req, res) => {
+  const botRows = Object.keys(bots).map(name => `
+    <tr>
+      <td>${name}</td>
+      <td style="color:${bots[name].status === 'In-Game' ? '#28a745' : '#ff5555'}">${bots[name].status}</td>
+      <td>
+        <button onclick="fetch('/tpa/${name}')">TPA</button>
+        <button onclick="individualChat('${name}')" style="background:#6c757d">Chat</button>
+      </td>
+    </tr>`).join('');
+
   res.send(`
     <html>
-      <head>
-        <title>Raw Input Monitor</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-          body { background: #000; color: #0f0; font-family: 'Courier New', monospace; padding: 10px; }
-          .console { background: #050505; border: 1px solid #222; height: 70vh; overflow-y: scroll; padding: 10px; font-size: 12px; }
-          .status-bar { display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
-          .bot-card { background: #111; padding: 5px 10px; border-radius: 4px; border-left: 3px solid #0f0; }
-          button { background: #d00; color: #fff; border: none; padding: 10px; cursor: pointer; width: 100%; font-weight: bold; margin-top: 10px;}
-        </style>
-      </head>
+      <head><title>Bot Commander</title><meta name="viewport" content="width=device-width, initial-scale=1">
+      <style>
+        body { background: #121212; color: #fff; font-family: sans-serif; padding:10px; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        td, th { border: 1px solid #333; padding: 10px; text-align: left; }
+        button { background: #007bff; color: white; border: none; padding: 8px; border-radius: 4px; cursor:pointer; }
+        .chat-section { background: #1e1e1e; padding: 15px; border-radius: 8px; border: 1px solid #444; margin-bottom: 10px; }
+        input { width: 70%; padding: 10px; border-radius: 4px; border: 1px solid #333; background: #000; color: #fff; }
+        #logs { background: #000; height: 300px; overflow-y: scroll; padding: 10px; font-family: monospace; border: 1px solid #333; font-size: 13px; }
+      </style></head>
       <body>
-        <h3>SYSTEM RAW FEED</h3>
-        <div class="status-bar">
-          ${Object.keys(bots).map(name => `<div class="bot-card">${name}: ${bots[name].status}</div>`).join('')}
+        <h3>Bot Status</h3>
+        <table><tr><th>Bot</th><th>Status</th><th>Actions</th></tr>${botRows}</table>
+        
+        <div class="chat-section">
+          <input type="text" id="chatInput" placeholder="Type message to all bots...">
+          <button onclick="broadcast()" style="background:#28a745">SEND ALL</button>
+          <button onclick="window.open('/view-full-log')" style="background:#dc3545">VIEW LOGS</button>
         </div>
-        <div class="console" id="con">${rawWebLogs.join('<br>')}</div>
-        <button onclick="window.open('/download-raw')">DOWNLOAD FULL RAW LOG (.TXT)</button>
+
+        <div id="logs">${webLogs.join('<br>')}</div>
+
         <script>
-          setInterval(() => {
-            fetch('/raw-data').then(r => r.text()).then(h => {
-              const c = document.getElementById('con');
-              c.innerHTML = h;
-            });
-          }, 2000);
+            function individualChat(name) {
+                const msg = prompt("Message from " + name + ":");
+                if(msg) fetch('/chat/' + name + '?msg=' + encodeURIComponent(msg));
+            }
+            function broadcast() {
+                const input = document.getElementById('chatInput');
+                if(!input.value) return;
+                fetch('/chat-all?msg=' + encodeURIComponent(input.value));
+                input.value = '';
+            }
+            setInterval(() => {
+                fetch('/logs').then(r => r.text()).then(h => document.getElementById('logs').innerHTML = h);
+            }, 2500);
         </script>
       </body>
     </html>
   `);
 });
 
-app.get('/raw-data', (req, res) => res.send(rawWebLogs.join('<br>')));
-app.get('/download-raw', (req, res) => res.sendFile(RAW_LOG_FILE));
+app.get('/logs', (req, res) => res.send(webLogs.join('<br>')));
+app.get('/view-full-log', (req, res) => fs.existsSync(DEATH_LOG_FILE) ? res.sendFile(DEATH_LOG_FILE) : res.send("No logs."));
+app.get('/tpa/:name', (req, res) => { bots[req.params.name]?.tpa(); res.sendStatus(200); });
+app.get('/chat/:name', (req, res) => { bots[req.params.name]?.sendChat(req.query.msg); res.sendStatus(200); });
+app.get('/chat-all', (req, res) => { Object.values(bots).forEach(b => b.sendChat(req.query.msg)); res.sendStatus(200); });
 
-app.listen(port, () => console.log(`Raw Monitor Active: ${port}`));
+app.listen(port, () => console.log(`Dashboard active on port ${port}`));
 
