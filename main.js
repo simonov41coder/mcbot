@@ -13,7 +13,7 @@ const GLOBAL_CONFIG = {
   targetPlayer: 'ditnshyky'
 };
 
-const ACCOUNTS = ['ws_lv', 'penguras_money', 'sr41'];
+const ACCOUNTS = ['ragat_lah', 'penguras_money'];
 const bots = {};
 let webLogs = [];
 const DEATH_LOG_FILE = path.join(__dirname, 'deaths.txt');
@@ -73,6 +73,8 @@ class BotInstance {
 
     this.bot.once('spawn', async () => {
       this.status = 'Lobby (Auth)';
+      await this.wait(2000);
+      this.bot.chat(`/register ${GLOBAL_CONFIG.password}`);
       await this.wait(2000);
       this.bot.chat(`/login ${GLOBAL_CONFIG.password}`);
       this.startJoinCheck();
