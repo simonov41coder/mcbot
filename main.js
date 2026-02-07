@@ -9,7 +9,7 @@ const GLOBAL_CONFIG = {
   host: '185.207.166.12',
   port: 25565,
   version: '1.20.1',
-  password: 'woylah12',
+  password: 'kuyashii123',
   targetPlayer: 'ditnshyky'
 };
 
@@ -20,20 +20,24 @@ const DEATH_LOG_FILE = path.join(__dirname, 'deaths.txt');
 
 // --- UTILS ---
 
-function logToFile(content) {
-  const timestamp = new Date().toLocaleString('en-GB', { 
+function getJakartaTime() {
+  return new Date().toLocaleString('en-GB', { 
     timeZone: 'Asia/Jakarta', 
     timeZoneName: 'short' 
   });
-  const logEntry = `[${timestamp}] ${content}\n`;
+}
+
+// Fixed logger: Captures everything sent to it
+function logToFile(botName, content) {
+  const logEntry = `[${getJakartaTime()}] [${botName}] ${content}\n`;
   fs.appendFile(DEATH_LOG_FILE, logEntry, (err) => {
-    if (err) console.error('File Save Error:', err);
+    if (err) console.error('Write Error:', err);
   });
 }
 
 function addWebLog(name, msg) {
   const cleanMsg = msg.replace(/§[0-9a-fk-or]/g, '');
-  // GARBAGE FILTER: Block status bars/mana/health
+  // We still filter stats from the WEB dashboard so it doesn't lag your browser
   if (cleanMsg.includes('❤') || cleanMsg.includes('★') || cleanMsg.includes('⛨')) return;
 
   const entry = `<span style="color: #888">[${new Date().toLocaleTimeString()}]</span> <b style="color: #55ff55">[${name}]</b> ${cleanMsg}`;
@@ -45,14 +49,10 @@ class BotInstance {
   constructor(username, index) {
     this.username = username;
     this.status = 'Initializing';
-    this.lastPos = null;
-    this.moveLogCooldown = false;
-
-    setTimeout(() => this.connect(), index * 10000);
+    setTimeout(() => this.connect(), index * 5000);
   }
 
   connect() {
-    this.cleanup();
     this.status = 'Connecting...';
     this.bot = mineflayer.createBot({
       host: GLOBAL_CONFIG.host,
@@ -62,50 +62,25 @@ class BotInstance {
       auth: 'offline'
     });
 
-    // --- LOGIC: KILLER & SYSTEM MESSAGE CAPTURE ---
+    // --- THE FULL LOG ENGINE ---
     this.bot.on('message', (jsonMsg) => {
       const msg = jsonMsg.toString();
-      const deathKeywords = ['slain', 'killed', 'died', 'burnt', 'fell', 'shot', 'lava', 'slapped', 'murdered'];
       
-      if (msg.includes(this.username) && deathKeywords.some(k => msg.toLowerCase().includes(k))) {
-        const nearby = this.getNearbyPlayers();
-        const entry = `[DEATH] ${msg} | Nearby at time of death: ${nearby}`;
-        addWebLog(this.username, `<b style="color: #ffaa00; background: #330000;">${entry}</b>`);
-        logToFile(entry);
-      } else {
-        addWebLog(this.username, msg);
-      }
+      // 1. Log EVERYTHING to the file (No filters)
+      logToFile(this.username, msg);
+      
+      // 2. Show in Web UI (Filters applied inside function)
+      addWebLog(this.username, msg);
     });
 
-    // --- LOGIC: MOVEMENT TRACKING (Who is pushing the bot?) ---
-    this.bot.on('move', () => {
-      if (!this.bot.entity || this.status !== 'In-Game' || this.moveLogCooldown) return;
-
-      if (!this.lastPos) {
-        this.lastPos = this.bot.entity.position.clone();
-        return;
-      }
-
-      const dist = this.bot.entity.position.distanceTo(this.lastPos);
-      if (dist > 3) { // If bot moved more than 3 blocks suddenly
-        this.moveLogCooldown = true;
-        const nearby = this.getNearbyPlayers();
-        const moveEntry = `[MOVED] ${this.username} moved ${dist.toFixed(1)}m. Suspects nearby: ${nearby}`;
-        
-        addWebLog(this.username, `<i style="color: #55aaff">${moveEntry}</i>`);
-        logToFile(moveEntry);
-
-        this.lastPos = this.bot.entity.position.clone();
-        // Cooldown to prevent log spam while being pushed
-        setTimeout(() => { this.moveLogCooldown = false; }, 10000);
-      }
+    this.bot.on('death', () => {
+      this.status = 'Dead ☠';
+      logToFile(this.username, "!!! BOT DIED (Event Triggered) !!!");
     });
 
     this.bot.once('spawn', async () => {
       this.status = 'Lobby (Auth)';
       await this.wait(2000);
-      this.bot.chat(`/register ${GLOBAL_CONFIG.password}`);
-      await this.wait(1500);
       this.bot.chat(`/login ${GLOBAL_CONFIG.password}`);
       this.startJoinCheck();
     });
@@ -113,54 +88,39 @@ class BotInstance {
     this.bot.on('spawn', () => {
       if (this.status === 'Dead ☠') {
         this.status = 'In-Game';
-        addWebLog(this.username, "Respawned.");
+        logToFile(this.username, "Bot respawned and is back in world.");
       }
     });
 
-    this.bot.on('death', () => { this.status = 'Dead ☠'; });
     this.bot.on('end', (reason) => {
       this.status = 'Offline';
-      addWebLog(this.username, `Disconnected: ${reason}`);
-      setTimeout(() => this.connect(), 20000);
+      logToFile(this.username, `Disconnected: ${reason}`);
+      setTimeout(() => this.connect(), 15000);
     });
-    this.bot.on('error', (err) => addWebLog(this.username, `Error: ${err.message}`));
-  }
 
-  getNearbyPlayers() {
-    if (!this.bot.entities) return "None";
-    const players = Object.values(this.bot.entities)
-      .filter(e => e.type === 'player' && e.username !== this.bot.username)
-      .map(p => p.username);
-    return players.length > 0 ? players.join(', ') : "No players nearby";
+    this.bot.on('error', (err) => logToFile(this.username, `Error: ${err.message}`));
   }
 
   startJoinCheck() {
-    this.joinInterval = setInterval(async () => {
+    setInterval(async () => {
       if (!this.bot || !this.bot.inventory) return;
       const hotbar = this.bot.inventory.slots.slice(36, 45);
-      const clock = hotbar.find(item => item && (item.name.includes('clock') || item.name.includes('compass')));
+      const selector = hotbar.find(i => i && (i.name.includes('clock') || i.name.includes('compass')));
 
-      if (!clock) {
-        if (this.status !== 'In-Game' && this.status !== 'Dead ☠') this.status = 'In-Game';
-        return;
+      if (!selector) {
+         if (this.status !== 'In-Game' && this.status !== 'Dead ☠') this.status = 'In-Game';
+         return;
       }
-
+      
       this.status = 'Lobby (Joining)';
       try {
-        if (this.bot.currentWindow) {
-          await this.bot.clickWindow(20, 0, 0);
-          return;
-        }
-        const slot = this.bot.inventory.slots.indexOf(clock) - 36;
-        this.bot.setQuickBarSlot(slot);
-        await this.wait(500);
+        if (this.bot.currentWindow) { await this.bot.clickWindow(20, 0, 0); return; }
+        this.bot.setQuickBarSlot(this.bot.inventory.slots.indexOf(selector) - 36);
         this.bot.activateItem();
       } catch (e) {}
-    }, 8000);
+    }, 6000);
   }
 
-  cleanup() { if (this.joinInterval) clearInterval(this.joinInterval); }
-  sendChat(msg) { if (this.bot) this.bot.chat(msg); }
   tpa() { if (this.bot) this.bot.chat(`/tpa ${GLOBAL_CONFIG.targetPlayer}`); }
   wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 }
@@ -169,67 +129,49 @@ ACCOUNTS.forEach((name, i) => { bots[name] = new BotInstance(name, i); });
 
 // --- DASHBOARD ---
 app.get('/', (req, res) => {
-  let botRows = Object.keys(bots).map(name => `
+  const botRows = Object.keys(bots).map(name => `
     <tr>
       <td>${name}</td>
-      <td style="color:${bots[name].status === 'In-Game' ? '#28a745' : (bots[name].status === 'Dead ☠' ? '#ff5555' : '#ffc107')}"><b>${bots[name].status}</b></td>
-      <td>
-        <button onclick="fetch('/tpa/${name}')">TPA</button>
-        <button onclick="sendChat('${name}')" style="background:#6c757d">Chat</button>
-        <button onclick="fetch('/reset/${name}')" style="background:#dc3545">RST</button>
-      </td>
+      <td style="color:${bots[name].status === 'In-Game' ? '#28a745' : '#ff5555'}">${bots[name].status}</td>
+      <td><button onclick="fetch('/tpa/${name}')">TPA</button></td>
     </tr>`).join('');
 
   res.send(`
     <html>
-      <head><title>Bot Master</title><meta name="viewport" content="width=device-width, initial-scale=1">
+      <head><title>Full Logger</title><meta name="viewport" content="width=device-width, initial-scale=1">
       <style>
-        body { font-family: sans-serif; background: #121212; color: #fff; padding: 10px; }
-        table { width: 100%; border-collapse: collapse; margin-bottom: 15px; }
-        td, th { padding: 10px; border: 1px solid #333; text-align: left; }
-        button { padding: 8px 12px; border: none; border-radius: 4px; background: #007bff; color: white; cursor: pointer; font-weight: bold; }
-        .logs { background: #000; height: 500px; overflow-y: scroll; padding: 10px; font-family: monospace; font-size: 12px; border: 1px solid #444; color: #bbb; }
-        .controls { display: flex; gap: 10px; margin-bottom: 10px; }
+        body { background: #121212; color: #fff; font-family: sans-serif; padding:10px; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        td, th { border: 1px solid #333; padding: 8px; }
+        button { background: #007bff; color: white; border: none; padding: 10px; border-radius: 5px; cursor:pointer; }
+        #logs { background: #000; height: 350px; overflow-y: scroll; padding: 10px; font-family: monospace; border: 1px solid #444; }
+        .btn-view { background: #dc3545; width: 100%; font-weight: bold; padding: 15px; margin-bottom: 10px;}
       </style></head>
       <body>
-        <h3>Bot Dashboard</h3>
-        <table><tr><th>Bot</th><th>Status</th><th>Actions</th></tr>${botRows}</table>
-        <div class="controls">
-            <button onclick="fetch('/tpa-all')" style="background:#28a745; flex: 1">TPA ALL</button>
-            <button onclick="window.open('/view-deaths')" style="background:#8b0000; flex: 1">VIEW LOG FILE</button>
-        </div>
-        <div class="logs" id="logBox">${webLogs.join('<br>')}</div>
+        <h3>Bot Control</h3>
+        <table><tr><th>Name</th><th>Status</th><th>Action</th></tr>${botRows}</table>
+        <button class="btn-view" onclick="window.open('/view-full-log')">OPEN FULL RAW LOG FILE</button>
+        <div id="logs">${webLogs.join('<br>')}</div>
         <script>
-          function sendChat(name) {
-            let m = prompt('Message for ' + name);
-            if(m) fetch('/chat/' + name + '?msg=' + encodeURIComponent(m));
-          }
-          setInterval(() => {
-            fetch('/get-logs').then(r => r.text()).then(html => {
-              const b = document.getElementById('logBox');
-              const down = b.scrollHeight - b.clientHeight <= b.scrollTop + 30;
-              b.innerHTML = html;
-              if(down) b.scrollTop = b.scrollHeight;
-            });
-          }, 2000);
+            setInterval(() => {
+                fetch('/logs').then(r => r.text()).then(h => document.getElementById('logs').innerHTML = h);
+            }, 2500);
         </script>
       </body>
     </html>
   `);
 });
 
-app.get('/get-logs', (req, res) => res.send(webLogs.join('<br>')));
-app.get('/view-deaths', (req, res) => {
+app.get('/logs', (req, res) => res.send(webLogs.join('<br>')));
+app.get('/view-full-log', (req, res) => {
     if (fs.existsSync(DEATH_LOG_FILE)) {
-        res.type('text/plain').sendFile(DEATH_LOG_FILE);
+        res.set('Content-Type', 'text/plain');
+        res.sendFile(DEATH_LOG_FILE);
     } else {
-        res.send("No logs recorded.");
+        res.send("No logs yet.");
     }
 });
-app.get('/reset/:name', (req, res) => { bots[req.params.name]?.bot.quit(); res.sendStatus(200); });
 app.get('/tpa/:name', (req, res) => { bots[req.params.name]?.tpa(); res.sendStatus(200); });
-app.get('/tpa-all', (req, res) => { Object.values(bots).forEach(b => b.tpa()); res.sendStatus(200); });
-app.get('/chat/:name', (req, res) => { bots[req.params.name]?.sendChat(req.query.msg); res.sendStatus(200); });
 
-app.listen(port, () => console.log(`Dashboard active on port ${port}`));
+app.listen(port, () => console.log(`Server Online: ${port}`));
 
