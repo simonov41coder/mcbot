@@ -13,7 +13,7 @@ const GLOBAL_CONFIG = {
   targetPlayer: 'ditnshyky'
 };
 
-const ACCOUNTS = ['ragat_lah', 'penguras_money'];
+const ACCOUNTS = ['ragat_lah', 'penguras_money', "putra_putri"];
 const bots = {};
 let webLogs = [];
 const DEATH_LOG_FILE = path.join(__dirname, 'deaths.txt');
